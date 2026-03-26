@@ -2,7 +2,7 @@ import type { Player, Card } from "../../models/player";
 import type { GameRoom, PendingBase, ResumeAfterRevive } from "./types";
 import { TURN_MS, RESPONSE_MS } from "./types";
 import { ensureRuntime, drawCard, discard, takeFromDiscard, maybeSuzyDraw, aliveCount, alivePlayers, ensurePlayerRuntime, equipmentHas, takeEquipment } from "./runtime";
-import { currentPlayer, getPlayer, nextAliveIndex, isTurnEligible } from "./players";
+import { currentPlayer, getPlayer, nextAliveIndex, isTurnEligible, isTargetablePlayer } from "./players";
 import { broadcastRoom, broadcastGameState, broadcastMeStates, safeSend, broadcastCardPlayed, broadcastPlayerPassed } from "./broadcast";
 import { CHAR } from "./types";
 import { isChar, cardKey } from "./utils";
@@ -255,7 +255,7 @@ export function buildOtherPlayersOrder(room: GameRoom, attackerId: string): stri
   for (let step = 1; step <= n; step++) {
     const i = (attackerIdx + step) % n;
     const p = arr[i] as Player;
-    if (isTurnEligible(p) && p.id !== attackerId) list.push(p.id);
+    if (isTargetablePlayer(p) && p.id !== attackerId) list.push(p.id);
   }
   return list;
 }
@@ -365,25 +365,26 @@ export function continueIndians(room: GameRoom) {
   while (pend.idx < pend.targets.length) {
     const targetId = pend.targets[pend.idx];
     const target = getPlayer(room, targetId);
-    if (!target || !isTurnEligible(target)) {
+    if (!isTargetablePlayer(target)) {
       pend.idx++;
       continue;
     }
+    const targetPlayer = target as Player;
 
-    if (hasNoHandCards(target)) {
-      resolveIndiansWithoutResponse(room, pend, target);
+    if (hasNoHandCards(targetPlayer)) {
+      resolveIndiansWithoutResponse(room, pend, targetPlayer);
       return;
     }
 
     room.phase = "waiting";
     room.pendingEndsAt = Date.now() + RESPONSE_MS;
 
-    safeSend((target as any).ws, {
+    safeSend((targetPlayer as any).ws, {
       type: "action_required",
       roomCode: room.code,
       kind: "respond_to_indians",
-      toPlayerId: target.id,
-      targetId: target.id,
+      toPlayerId: targetPlayer.id,
+      targetId: targetPlayer.id,
       fromPlayerId: pend.attackerId,
       pendingEndsAt: room.pendingEndsAt,
     });
@@ -411,16 +412,20 @@ export function continueIndians(room: GameRoom) {
 export function openBangResponse(room: GameRoom, args: { attackerId: string; targetId: string; requiredMissed: number; missedSoFar: number }) {
   const { attackerId, targetId, requiredMissed, missedSoFar } = args;
   const target = getPlayer(room, targetId);
-  if (!target || !target.isAlive) {
+  if (!isTargetablePlayer(target)) {
+    room.phase = "main";
+    room.pending = null;
+    room.pendingEndsAt = undefined;
     broadcastGameState(room);
     broadcastMeStates(room);
     return;
   }
+  const targetPlayer = target as Player;
 
   const remainingMissed = Math.max(0, Number(requiredMissed ?? 1) - Number(missedSoFar ?? 0));
-  const barrelResponsesAvailable = barrelLikeCount(target);
-  if (remainingMissed > 0 && barrelResponsesAvailable <= 0 && hasNoHandCards(target)) {
-    resolveBangWithoutResponse(room, { attackerId, target });
+  const barrelResponsesAvailable = barrelLikeCount(targetPlayer);
+  if (remainingMissed > 0 && barrelResponsesAvailable <= 0 && hasNoHandCards(targetPlayer)) {
+    resolveBangWithoutResponse(room, { attackerId, target: targetPlayer });
     return;
   }
 
@@ -434,12 +439,12 @@ export function openBangResponse(room: GameRoom, args: { attackerId: string; tar
   } as any;
   room.pendingEndsAt = Date.now() + RESPONSE_MS;
 
-  safeSend((target as any).ws, {
+  safeSend((targetPlayer as any).ws, {
     type: "action_required",
     roomCode: room.code,
     kind: "respond_to_bang",
-    toPlayerId: target.id,
-    targetId: target.id,
+    toPlayerId: targetPlayer.id,
+    targetId: targetPlayer.id,
     fromPlayerId: attackerId,
     requiredMissed,
     missedSoFar,
@@ -459,26 +464,27 @@ export function openBarrelChoice(room: GameRoom, args: {
   missedSoFar?: number;
 }) {
   const target = getPlayer(room, args.targetId);
-  if (!target || !target.isAlive) {
+  if (!isTargetablePlayer(target)) {
     broadcastGameState(room);
     broadcastMeStates(room);
     return;
   }
+  const targetPlayer = target as Player;
 
   room.phase = "waiting";
   room.pending = {
     kind: "barrel_choice",
     ...args,
-    toPlayerId: target.id,
+    toPlayerId: targetPlayer.id,
   } as any;
   room.pendingEndsAt = Date.now() + RESPONSE_MS;
 
-  safeSend((target as any).ws, {
+  safeSend((targetPlayer as any).ws, {
     type: "action_required",
     roomCode: room.code,
     kind: "choose_barrel",
-    toPlayerId: target.id,
-    targetId: target.id,
+    toPlayerId: targetPlayer.id,
+    targetId: targetPlayer.id,
     fromPlayerId: args.attackerId,
     source: "bang",
     barrelChecksRemaining: args.barrelChecksRemaining,
@@ -502,11 +508,15 @@ export function continueAfterBarrelBang(
   const remainingChecks = Math.max(0, Number(args.barrelChecksRemaining ?? 0) - (usedBarrel ? 1 : 0));
 
   const target = getPlayer(room, targetId);
-  if (!target || !target.isAlive) {
+  if (!isTargetablePlayer(target)) {
+    room.phase = "main";
+    room.pending = null;
+    room.pendingEndsAt = undefined;
     broadcastGameState(room);
     broadcastMeStates(room);
     return;
   }
+  const targetPlayer = target as Player;
 
   const remainingMissed = requiredMissed - missedSoFar;
   if (remainingMissed <= 0) {
@@ -574,13 +584,14 @@ export function continueGatling(room: GameRoom) {
   while (pend.idx < pend.targets.length) {
     const targetId = pend.targets[pend.idx];
     const target = getPlayer(room, targetId);
-    if (!target || !isTurnEligible(target)) {
+    if (!isTargetablePlayer(target)) {
       pend.idx++;
       continue;
     }
+    const targetPlayer = target as Player;
 
-    if (hasNoHandCards(target)) {
-      resolveGatlingWithoutResponse(room, pend, target);
+    if (hasNoHandCards(targetPlayer)) {
+      resolveGatlingWithoutResponse(room, pend, targetPlayer);
       return;
     }
 
@@ -588,7 +599,7 @@ export function continueGatling(room: GameRoom) {
     room.phase = "waiting";
     room.pendingEndsAt = Date.now() + RESPONSE_MS;
 
-    safeSend((target as any).ws, {
+    safeSend((targetPlayer as any).ws, {
       type: "action_required",
       roomCode: room.code,
       kind: "respond_to_gatling",
@@ -619,7 +630,7 @@ export function continueGatling(room: GameRoom) {
 /** ===== Duel ===== */
 export function promptDuel(room: GameRoom, pend: Extract<PendingBase, { kind: "duel" }>) {
   const responder = getPlayer(room, pend.responderId);
-  if (!responder || !responder.isAlive) {
+  if (!isTargetablePlayer(responder)) {
     room.phase = "main";
     room.pending = null;
     room.pendingEndsAt = undefined;
@@ -627,21 +638,22 @@ export function promptDuel(room: GameRoom, pend: Extract<PendingBase, { kind: "d
     broadcastMeStates(room);
     return;
   }
+  const responderPlayer = responder as Player;
 
-  if (hasNoHandCards(responder)) {
-    resolveDuelWithoutResponse(room, pend, responder);
+  if (hasNoHandCards(responderPlayer)) {
+    resolveDuelWithoutResponse(room, pend, responderPlayer);
     return;
   }
 
   room.phase = "waiting";
   room.pendingEndsAt = Date.now() + RESPONSE_MS;
 
-  safeSend((responder as any).ws, {
+  safeSend((responderPlayer as any).ws, {
     type: "action_required",
     roomCode: room.code,
     kind: "respond_to_duel",
-    toPlayerId: responder.id,
-    responderId: responder.id,
+    toPlayerId: responderPlayer.id,
+    responderId: responderPlayer.id,
     opponentId: pend.responderId === pend.targetId ? pend.initiatorId : pend.targetId,
     pendingEndsAt: room.pendingEndsAt,
   });
@@ -718,17 +730,19 @@ export function resolveDynamiteAtTurnStart(room: GameRoom, player: Player): "ok"
 
   if (exploded) {
     discard(room, dyn);
-    const opened = applyDamage(room, player, 3, undefined, { kind: "turn_start", stage: "jail", playerId: player.id });
+
     broadcastRoom(room, {
       type: "action_resolved",
       roomCode: room.code,
       kind: "dynamite_exploded",
       playerId: player.id,
-      newHp: player.hp,
-      isAlive: player.isAlive,
     });
 
+    const opened = applyDamage(room, player, 3, undefined, { kind: "turn_start", stage: "jail", playerId: player.id });
     if (opened) return "waiting";
+
+    broadcastGameState(room);
+    broadcastMeStates(room);
     return "ok";
   }
 
@@ -1053,21 +1067,20 @@ export function resolveLuckyChoice(room: GameRoom, player: Player, chosenCardId:
     if (!success) {
       // exploded
       discard(room, dyn);
-      const opened = applyDamage(room, player, 3, undefined, { kind: "turn_start", stage: "jail", playerId: player.id });
 
       broadcastRoom(room, {
         type: "action_resolved",
         roomCode: room.code,
         kind: "dynamite_exploded",
         playerId: player.id,
-        newHp: player.hp,
-        isAlive: player.isAlive,
       });
+
+      const opened = applyDamage(room, player, 3, undefined, { kind: "turn_start", stage: "jail", playerId: player.id });
+      if (opened) return;
 
       broadcastGameState(room);
       broadcastMeStates(room);
 
-      if (opened) return;
       if (room.ended) return;
 
       return runTurnStart(room, player, "jail");
@@ -1154,7 +1167,7 @@ export function resolveLuckyChoice(room: GameRoom, player: Player, chosenCardId:
 
     const target = getPlayer(room, targetId);
 
-    if (!target || !target.isAlive) {
+    if (!isTargetablePlayer(target)) {
       room.phase = "main";
       room.pending = {
         kind: "gatling",
@@ -1189,8 +1202,10 @@ export function resolveLuckyChoice(room: GameRoom, player: Player, chosenCardId:
       return;
     }
 
+    const targetPlayer = target as Player;
+
     if (resume.barrelChecksRemaining > 0) {
-      const nextRes = startBarrelDraw(room, target, {
+      const nextRes = startBarrelDraw(room, targetPlayer, {
         kind: "barrel_vs_gatling",
         attackerId,
         targetId,
@@ -1233,7 +1248,7 @@ export function resolveLuckyChoice(room: GameRoom, player: Player, chosenCardId:
     };
     room.pendingEndsAt = Date.now() + RESPONSE_MS;
 
-    safeSend((target as any).ws, {
+    safeSend((targetPlayer as any).ws, {
       type: "action_required",
       roomCode: room.code,
       kind: "respond_to_gatling",
@@ -1486,7 +1501,7 @@ export function resolvePendingTimeout(room: GameRoom) {
     room.phase = "main";
     room.pendingEndsAt = undefined;
 
-    const opened = target && target.isAlive ? applyDamage(room, target, 1, pend.attackerId) : false;
+    const opened = isTargetablePlayer(target) ? applyDamage(room, target as Player, 1, pend.attackerId) : false;
     if (opened) return;
 
     broadcastRoom(room, {
@@ -1507,7 +1522,8 @@ export function resolvePendingTimeout(room: GameRoom) {
     const targetId = pend.targets[pend.idx];
     const target = getPlayer(room, targetId);
 
-    if (target && target.isAlive) {
+    if (isTargetablePlayer(target)) {
+      const targetPlayer = target as Player;
       const resume: PendingBase = {
         kind: "indians",
         attackerId: pend.attackerId,
@@ -1522,7 +1538,7 @@ export function resolvePendingTimeout(room: GameRoom) {
         targetId,
       });
 
-      const opened = applyDamage(room, target, 1, pend.attackerId, resume);
+      const opened = applyDamage(room, targetPlayer, 1, pend.attackerId, resume);
       if (opened) return;
     }
 
@@ -1535,7 +1551,8 @@ export function resolvePendingTimeout(room: GameRoom) {
     const targetId = pend.targets[pend.idx];
     const target = getPlayer(room, targetId);
 
-    if (target && target.isAlive) {
+    if (isTargetablePlayer(target)) {
+      const targetPlayer = target as Player;
       const resume: PendingBase = {
         kind: "gatling",
         attackerId: pend.attackerId,
@@ -1549,7 +1566,7 @@ export function resolvePendingTimeout(room: GameRoom) {
         attackerId: pend.attackerId,
         targetId,
       });
-      const opened = applyDamage(room, target, 1, pend.attackerId, resume);
+      const opened = applyDamage(room, targetPlayer, 1, pend.attackerId, resume);
       if (opened) return;
     }
 
@@ -1566,7 +1583,7 @@ export function resolvePendingTimeout(room: GameRoom) {
     room.phase = "main";
     room.pendingEndsAt = undefined;
 
-    const opened = loser && loser.isAlive ? applyDamage(room, loser, 1, winnerId) : false;
+    const opened = isTargetablePlayer(loser) ? applyDamage(room, loser as Player, 1, winnerId) : false;
     if (opened) return;
 
     broadcastRoom(room, {

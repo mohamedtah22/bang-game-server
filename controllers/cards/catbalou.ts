@@ -1,20 +1,21 @@
 import type { PlayCardFn } from "./types";
 import { broadcastCardPlayed, broadcastGameState, broadcastMeStates, broadcastRoom } from "../engine/broadcast";
 import { discard, maybeSuzyDraw } from "../engine/runtime";
-import { getPlayer } from "../engine/players";
+import { getPlayer, isTargetablePlayer } from "../engine/players";
 import { normalizeMaybeId, normalizeMaybeIndex } from "../engine/utils";
 
 export const playCatBalou: PlayCardFn = (room, me, payload, card) => {
   if (!payload.targetId) throw new Error("Missing targetId");
   const target = getPlayer(room, payload.targetId);
-  if (!target || !target.isAlive) throw new Error("Bad target");
+  if (!isTargetablePlayer(target)) throw new Error("Target is unavailable");
+  const targetPlayer = target as any;
 
   broadcastCardPlayed(room, {
     action: "play",
     playerId: me.id,
     cardKey: "catbalou",
     cardId: (card as any).id,
-    targetId: target.id,
+    targetId: targetPlayer.id,
   });
 
   discard(room, card);
@@ -30,40 +31,40 @@ export const playCatBalou: PlayCardFn = (room, me, payload, card) => {
 
   // 1) explicit equipment pick
   if (chosenEquipId) {
-    const ix = target.equipment.findIndex((c) => String((c as any).id) === String(chosenEquipId));
+    const ix = targetPlayer.equipment.findIndex((c: any) => String((c as any).id) === String(chosenEquipId));
     if (ix < 0) throw new Error("Card not available (equipment)");
-    const [c] = target.equipment.splice(ix, 1);
+    const [c] = targetPlayer.equipment.splice(ix, 1);
     removed = c ?? null;
     fromZone = removed ? "equipment" : "none";
   }
   // 2) hand => RANDOM by server
   else if (wantsHand) {
-    if (target.hand.length === 0) {
+    if (targetPlayer.hand.length === 0) {
       // fallback: if no hand, try random equipment
-      if (target.equipment.length === 0) removed = null;
+      if (targetPlayer.equipment.length === 0) removed = null;
       else {
-        const j = Math.floor(Math.random() * target.equipment.length);
-        const [c] = target.equipment.splice(j, 1);
+        const j = Math.floor(Math.random() * targetPlayer.equipment.length);
+        const [c] = targetPlayer.equipment.splice(j, 1);
         removed = c ?? null;
         fromZone = removed ? "equipment" : "none";
       }
     } else {
-      const j = Math.floor(Math.random() * target.hand.length);
-      const [c] = target.hand.splice(j, 1);
+      const j = Math.floor(Math.random() * targetPlayer.hand.length);
+      const [c] = targetPlayer.hand.splice(j, 1);
       removed = c ?? null;
       fromZone = removed ? "hand" : "none";
     }
   }
   // 3) no choice provided => old fallback behavior
   else {
-    if (target.hand.length > 0) {
-      const j = Math.floor(Math.random() * target.hand.length);
-      const [c] = target.hand.splice(j, 1);
+    if (targetPlayer.hand.length > 0) {
+      const j = Math.floor(Math.random() * targetPlayer.hand.length);
+      const [c] = targetPlayer.hand.splice(j, 1);
       removed = c ?? null;
       fromZone = removed ? "hand" : "none";
-    } else if (target.equipment.length > 0) {
-      const j = Math.floor(Math.random() * target.equipment.length);
-      const [c] = target.equipment.splice(j, 1);
+    } else if (targetPlayer.equipment.length > 0) {
+      const j = Math.floor(Math.random() * targetPlayer.equipment.length);
+      const [c] = targetPlayer.equipment.splice(j, 1);
       removed = c ?? null;
       fromZone = removed ? "equipment" : "none";
     }
@@ -71,7 +72,7 @@ export const playCatBalou: PlayCardFn = (room, me, payload, card) => {
 
   if (removed) discard(room, removed);
 
-  maybeSuzyDraw(room, target);
+  maybeSuzyDraw(room, targetPlayer);
   maybeSuzyDraw(room, me);
 
   broadcastRoom(room, {
@@ -79,7 +80,7 @@ export const playCatBalou: PlayCardFn = (room, me, payload, card) => {
     roomCode: room.code,
     ts: Date.now(),
     fromPlayerId: me.id,
-    targetId: target.id,
+    targetId: targetPlayer.id,
     fromZone,
     // ✅ Cat Balou always reveals because the discarded card goes face-up to discard pile
     revealedCard: removed ? removed : null,

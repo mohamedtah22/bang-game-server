@@ -30,6 +30,40 @@ function ensureWsId(ws: any) {
   return ws._id as string;
 }
 
+function normalizeClientSessionId(raw: any) {
+  return String(raw ?? "").trim();
+}
+
+function markSocketSuperseded(ws: any) {
+  if (!ws) return;
+  ws._superseded = true;
+  wsToRoom.delete(ws);
+  try {
+    ws.close(4000, "superseded");
+  } catch {}
+}
+
+function findPlayerBySession(clientSessionId: string) {
+  if (!clientSessionId) return null;
+  for (const room of rooms.values() as any as GameRoom[]) {
+    const player = ((room.players as any[]) ?? []).find(
+      (p: Player) => String((p as any)?.clientSessionId ?? "") === clientSessionId
+    ) as Player | undefined;
+    if (player) return { room, player };
+  }
+  return null;
+}
+
+function bindSocketToPlayer(room: GameRoom, player: Player, ws: any) {
+  const oldWs = (player as any).ws;
+  if (oldWs && oldWs !== ws) {
+    markSocketSuperseded(oldWs);
+  }
+
+  (player as any).ws = ws;
+  wsToRoom.set(ws, { roomCode: room.code, playerId: player.id });
+}
+
 function uniqueName(room: GameRoom, base: string) {
   const raw = (base || "Player").trim() || "Player";
   const taken = new Set((room.players as any[]).map((p) => p.name));
@@ -337,8 +371,19 @@ function initDeckAndDeal(room: GameRoom) {
   }
 }
 
-export function handleCreate(ws: any, payload: { name?: string }) {
+export function handleCreate(ws: any, payload: { name?: string; clientSessionId?: string }) {
   const playerId = ensureWsId(ws);
+  const clientSessionId = normalizeClientSessionId(payload.clientSessionId);
+
+  const existingSession = findPlayerBySession(clientSessionId);
+  if (existingSession) {
+    if (!existingSession.room.started) {
+      removeLobbyPlayer(existingSession.room, existingSession.player.id);
+    } else {
+      markSocketSuperseded((existingSession.player as any).ws);
+    }
+  }
+
   leaveIfInRoom(ws);
 
   const name = (payload.name || "Host").trim() || "Host";
@@ -353,6 +398,7 @@ export function handleCreate(ws: any, payload: { name?: string }) {
       {
         id: playerId,
         name,
+        clientSessionId,
         ws,
         role: "outlaw",
         playcharacter: "bart_cassidy",
@@ -374,8 +420,9 @@ export function handleCreate(ws: any, payload: { name?: string }) {
   emitRoomUpdate(room);
 }
 
-export function handleJoin(ws: any, payload: { roomCode?: string; name?: string }) {
+export function handleJoin(ws: any, payload: { roomCode?: string; name?: string; clientSessionId?: string }) {
   const playerId = ensureWsId(ws);
+  const clientSessionId = normalizeClientSessionId(payload.clientSessionId);
   const code = normalizeCode(payload.roomCode || "");
   const currentInfo = wsToRoom.get(ws);
   if (currentInfo && currentInfo.playerId === playerId && normalizeCode(currentInfo.roomCode) === code) {
@@ -402,12 +449,26 @@ export function handleJoin(ws: any, payload: { roomCode?: string; name?: string 
 
   const wanted = (payload.name || "Player").trim() || "Player";
   const name = uniqueName(room, wanted);
-  const existing = (room.players as any[]).find((p) => p.id === playerId) as Player | undefined;
+  let existing = (room.players as any[]).find((p) => p.id === playerId) as Player | undefined;
+
+  if (!existing && clientSessionId) {
+    existing = (room.players as any[]).find((p) => String((p as any)?.clientSessionId ?? "") === clientSessionId) as Player | undefined;
+  }
+
+  const existingSession = !existing && clientSessionId ? findPlayerBySession(clientSessionId) : null;
+  if (existingSession && existingSession.room.code !== room.code) {
+    if (!existingSession.room.started) {
+      removeLobbyPlayer(existingSession.room, existingSession.player.id);
+    } else {
+      markSocketSuperseded((existingSession.player as any).ws);
+    }
+  }
 
   if (!existing) {
     room.players.push({
       id: playerId,
       name,
+      clientSessionId,
       ws,
       role: "outlaw",
       playcharacter: "bart_cassidy",
@@ -418,43 +479,44 @@ export function handleJoin(ws: any, payload: { roomCode?: string; name?: string 
       isAlive: true,
     } as Player);
   } else {
-    existing.ws = ws;
+    existing.clientSessionId = existing.clientSessionId || clientSessionId;
+    bindSocketToPlayer(room, existing, ws);
     existing.name = name;
   }
 
-  wsToRoom.set(ws, { roomCode: code, playerId });
+  if (!existing) {
+    wsToRoom.set(ws, { roomCode: code, playerId });
+  }
   room.ready = room.players.length >= 4;
-  safeSend(ws, { type: "joined", roomCode: code, playerId, hostId: room.hostId, players: room.players.map((p: any) => ({ id: p.id, name: p.name })), ready: room.ready, maxPlayers: room.maxPlayers });
+  safeSend(ws, { type: "joined", roomCode: code, playerId: existing?.id ?? playerId, hostId: room.hostId, players: room.players.map((p: any) => ({ id: p.id, name: p.name })), ready: room.ready, maxPlayers: room.maxPlayers });
   emitRoomUpdate(room);
 }
 
-export function handleReconnect(ws: any, payload: { roomCode?: string; playerId?: string; name?: string }) {
+export function handleReconnect(ws: any, payload: { roomCode?: string; playerId?: string; name?: string; clientSessionId?: string }) {
   const code = normalizeCode(payload.roomCode || "");
-  const playerId = String(payload.playerId ?? "").trim();
-  if (!code || !playerId) return safeSend(ws, { type: "error", message: "Missing reconnect data" });
+  const clientSessionId = normalizeClientSessionId(payload.clientSessionId);
+  let playerId = String(payload.playerId ?? "").trim();
+  if (!code || (!playerId && !clientSessionId)) return safeSend(ws, { type: "error", message: "Missing reconnect data" });
 
   const room = rooms.get(code) as GameRoom | undefined;
   if (!room) return safeSend(ws, { type: "error", message: "Room not found" });
 
-  const player = getRoomPlayer(room, playerId) as any;
+  let player = getRoomPlayer(room, playerId) as any;
+  if (!player && clientSessionId) {
+    player = ((room.players as any[]) ?? []).find((p: Player) => String((p as any)?.clientSessionId ?? "") === clientSessionId) as any;
+    if (player) playerId = player.id;
+  }
   if (!player) return safeSend(ws, { type: "error", message: "Player not found in room" });
 
-  const oldWs = player.ws;
-  if (oldWs && oldWs !== ws) {
-    wsToRoom.delete(oldWs);
-    try {
-      oldWs.close();
-    } catch {}
-  }
-
   clearReconnectTimer(player);
-  player.ws = ws;
+  player.clientSessionId = player.clientSessionId || clientSessionId;
+  bindSocketToPlayer(room, player, ws);
   player.disconnected = false;
+  player.reconnectDeadlineAt = undefined;
 
   const wantedName = String(payload.name ?? "").trim();
   if (wantedName) player.name = player.name || wantedName;
 
-  wsToRoom.set(ws, { roomCode: code, playerId });
   safeSend(ws, { type: "reconnected", roomCode: code, playerId, reconnectGraceMs: RECONNECT_GRACE_MS, hostId: room.hostId, players: room.players.map((p: any) => ({ id: p.id, name: p.name })), ready: room.ready, maxPlayers: room.maxPlayers });
 
   if (!room.started) {

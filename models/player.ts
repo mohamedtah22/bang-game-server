@@ -120,6 +120,9 @@ export type Player = {
   /** server-side socket; may be undefined after disconnect */
   ws?: WebSocket;
 
+  /** stable client session id used to dedupe rapid reconnects */
+  clientSessionId?: string;
+
   role: Role;
   playcharacter: CharacterId;
 

@@ -1,7 +1,7 @@
 import type { PlayCardFn } from "./types";
 import { broadcastCardPlayed } from "../engine/broadcast";
 import { discard, maybeSuzyDraw } from "../engine/runtime";
-import { getPlayer } from "../engine/players";
+import { getPlayer, isTargetablePlayer } from "../engine/players";
 import { CHAR } from "../engine/types";
 import { isChar, cardKey } from "../engine/utils";
 import {
@@ -18,14 +18,15 @@ export const playBang: PlayCardFn = (room, me, payload, card) => {
   const k = cardKey(card);
   if (!payload.targetId) throw new Error("Missing targetId");
   const target = getPlayer(room, payload.targetId);
-  if (!target || !target.isAlive) throw new Error("Bad target");
-  if (target.id === me.id) throw new Error("Can't target yourself");
+  if (!isTargetablePlayer(target)) throw new Error("Target is unavailable");
+  const targetPlayer = target as any;
+  if (targetPlayer.id === me.id) throw new Error("Can't target yourself");
 
   const isBangLike = k === "bang" || (isChar(me, CHAR.calamity) && k === "missed");
   if (!isBangLike) throw new Error("Not a BANG card");
 
-  if (!canShootBang(room, me, target)) {
-    const d = effectiveDistance(room, me, target);
+  if (!canShootBang(room, me, targetPlayer)) {
+    const d = effectiveDistance(room, me, targetPlayer);
     const r = weaponRange(me);
     throw new Error(`Target out of range (distance ${d}, range ${r})`);
   }
@@ -43,13 +44,13 @@ export const playBang: PlayCardFn = (room, me, payload, card) => {
     cardKey: "bang",
     usedCardKey: k,
     cardId: (card as any).id,
-    targetId: target.id,
+    targetId: targetPlayer.id,
   });
 
   discard(room, card);
 
   const need = requiredMissedForBang(me);
-  const barrelChecksRemaining = barrelLikeCount(target);
+  const barrelChecksRemaining = barrelLikeCount(targetPlayer);
 
   maybeSuzyDraw(room, me);
 
@@ -57,7 +58,7 @@ export const playBang: PlayCardFn = (room, me, payload, card) => {
     openBarrelChoice(room, {
       source: "bang",
       attackerId: me.id,
-      targetId: target.id,
+      targetId: targetPlayer.id,
       requiredMissed: need,
       missedSoFar: 0,
       barrelChecksRemaining,
@@ -67,7 +68,7 @@ export const playBang: PlayCardFn = (room, me, payload, card) => {
 
   openBangResponse(room, {
     attackerId: me.id,
-    targetId: target.id,
+    targetId: targetPlayer.id,
     requiredMissed: need,
     missedSoFar: 0,
   });

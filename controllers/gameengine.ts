@@ -234,6 +234,7 @@ export function handleRespond(ws: any, payload: { cardId?: string; cardIds?: str
       takenCard = undefined;
 
       me.hp = Math.min(me.maxHp, me.hp + 1);
+      maybeSuzyDraw(room, me);
 
       room.pending = null;
       room.phase = "main";
@@ -560,6 +561,16 @@ export function handleRespond(ws: any, payload: { cardId?: string; cardIds?: str
         takenCard = undefined;
         throw new Error("Need BANG (or MISSED if Calamity)");
       }
+
+      broadcastCardPlayed(room, {
+        action: "respond",
+        playerId: me.id,
+        cardKey: cardKey(takenCard),
+        usedCardKey: cardKey(takenCard),
+        cardId: (takenCard as any).id,
+        context: "respond_to_duel",
+        targetId: opponentId,
+      });
 
       discard(room, takenCard);
       takenCard = undefined;

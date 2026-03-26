@@ -36,6 +36,10 @@ wss.on("connection", (ws: any) => {
       return;
     }
 
+    if ((ws as any)._superseded) {
+      return;
+    }
+
     if (msg?.type === "ping") {
       safeSend(ws, { type: "pong", ts: msg.ts ?? Date.now(), serverNow: Date.now() });
       return;

@@ -27,6 +27,21 @@ export function isTurnEligible(p?: Player | null) {
   return !!p && p.isAlive && !(p as any).disconnected;
 }
 
+export function isUnavailableTarget(p?: Player | null) {
+  if (!p) return true;
+  if (!p.isAlive) return true;
+  if ((p as any).disconnected) return true;
+
+  const lostConnection = !p.ws && Number((p as any).reconnectDeadlineAt ?? 0) > Date.now();
+  if (lostConnection) return true;
+
+  return false;
+}
+
+export function isTargetablePlayer(p?: Player | null) {
+  return !!p && !isUnavailableTarget(p);
+}
+
 export function assertMyTurn(room: GameRoom, playerId: string) {
   const cur = currentPlayer(room);
   if (!cur || cur.id !== playerId) throw new Error("Not your turn");
@@ -72,7 +87,7 @@ export function seatDistanceAlive(room: GameRoom, fromId: string, toId: string):
     for (let k = 1; k <= arr.length; k++) {
       const j = (cur - k + arr.length) % arr.length;
       const p = arr[j] as Player;
-      if (p?.isAlive) {
+      if (isTurnEligible(p)) {
         found = j;
         break;
       }

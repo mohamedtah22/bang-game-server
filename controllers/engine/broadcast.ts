@@ -207,6 +207,7 @@ export function broadcastGameState(room: GameRoom) {
       equipment: (p.equipment ?? []).map(ensureCardMeta),
       handCount: (p.hand ?? []).length,
       disconnected: !!(p as any).disconnected,
+      connectionLost: !(p as any)?.ws && !(p as any)?.disconnected && Number((p as any)?.reconnectDeadlineAt ?? 0) > Date.now(),
     })),
   });
 }
@@ -255,6 +256,7 @@ export function broadcastMeStates(room: GameRoom) {
         maxHp: me.maxHp,
         isAlive: me.isAlive,
         disconnected: !!(me as any).disconnected,
+        connectionLost: !(me as any)?.ws && !(me as any)?.disconnected && Number((me as any)?.reconnectDeadlineAt ?? 0) > Date.now(),
         equipment: (me.equipment ?? []).map(ensureCardMeta),
         hand: (me.hand ?? []).map(ensureCardMeta),
       },
